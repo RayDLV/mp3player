@@ -2,7 +2,7 @@
 
 A silly little MP3 player application for Windows 11, featuring both command-line and graphical interfaces. Built in C, because i don’t like the ones that exists and I’m tired of using Apple Music.
 
-Notice: Some comments may be written in italian_.
+Notice: _Some comments may be written in italian_.
 
 ## Features
 
