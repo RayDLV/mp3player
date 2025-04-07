@@ -1,0 +1,811 @@
+#include "../include/gui.h"
+#include <stdio.h>
+#include <windowsx.h>
+#include <shlobj.h>  // Per la funzione di selezione cartella
+#include <objidl.h>  // Per IStream
+
+// Includi GDI+ usando l'interfaccia C
+#define WINGDIPAPI __stdcall
+#define GDIPCONST const
+#include <gdiplus.h>
+
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "gdiplus.lib") // Collega GDI+
+
+// Variabile globale per memorizzare i dati della GUI
+static GUIData g_gui_data;
+
+// Variabile per tenere traccia dell'elemento attualmente evidenziato
+static int currently_highlighted_item = -1;
+
+// Nome della classe della finestra
+static const char* const WINDOW_CLASS_NAME = "MP3PlayerWindow";
+static const char* const WINDOW_TITLE = "MP3 Player";
+
+// ID dei controlli di equalizzazione
+#define ID_EQ_60HZ 500
+#define ID_EQ_170HZ 501
+#define ID_EQ_310HZ 502
+#define ID_EQ_600HZ 503
+#define ID_EQ_1KHZ 504
+#define ID_EQ_3KHZ 505
+#define ID_EQ_6KHZ 506
+#define ID_EQ_12KHZ 507
+#define ID_EQ_14KHZ 508
+#define ID_EQ_16KHZ 509
+#define ID_EQ_RESET 510
+
+// Frequenze dell'equalizzatore (in Hz)
+static const int eq_freqs[] = {60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000};
+static const char* eq_labels[] = {"60", "170", "310", "600", "1K", "3K", "6K", "12K", "14K", "16K"};
+#define EQ_BANDS 10
+
+// Inizializza i controlli comuni di Windows
+BOOL init_gui_controls() {
+    INITCOMMONCONTROLSEX icc;
+    icc.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES;
+    return InitCommonControlsEx(&icc);
+}
+
+// Crea la finestra principale
+HWND create_main_window(HINSTANCE hInstance) {
+    // Registra la classe della finestra
+    WNDCLASSEX wc;
+    ZeroMemory(&wc, sizeof(WNDCLASSEX));
+    
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = MainWindowProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = WINDOW_CLASS_NAME;
+    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+    
+    if (!RegisterClassEx(&wc)) {
+        MessageBox(NULL, "Registrazione della classe della finestra fallita", "Errore", MB_ICONERROR);
+        return NULL;
+    }
+    
+    // Crea la finestra
+    HWND hWnd = CreateWindowEx(
+        0,                          // Stile esteso
+        WINDOW_CLASS_NAME,          // Nome della classe
+        WINDOW_TITLE,               // Titolo della finestra
+        WS_OVERLAPPEDWINDOW,        // Stile della finestra
+        CW_USEDEFAULT, CW_USEDEFAULT, // Posizione
+        WINDOW_WIDTH, WINDOW_HEIGHT, // Dimensioni
+        NULL,                       // Finestra genitore
+        NULL,                       // Menu (verrà creato successivamente)
+        hInstance,                  // Istanza
+        NULL                        // Dati aggiuntivi
+    );
+    
+    if (!hWnd) {
+        MessageBox(NULL, "Creazione della finestra fallita", "Errore", MB_ICONERROR);
+        return NULL;
+    }
+    
+    return hWnd;
+}
+
+// Crea i controlli all'interno della finestra
+void create_controls(HWND hWnd, GUIData* gui) {
+    // Memorizza l'handle della finestra
+    gui->hWnd = hWnd;
+    
+    // Crea la ListView per la lista dei brani
+    gui->hListView = CreateWindowEx(
+        0,                          // Stile esteso
+        WC_LISTVIEW,                // Nome della classe
+        "",                         // Testo
+        WS_VISIBLE | WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SHOWSELALWAYS,
+        0, 0, 0, 0,                 // Posizione e dimensioni (saranno impostate in seguito)
+        hWnd,                       // Finestra genitore
+        (HMENU)LISTVIEW_ID,         // ID
+        GetModuleHandle(NULL),      // Istanza
+        NULL                        // Dati aggiuntivi
+    );
+    
+    // Aggiungi lo stile esteso alla ListView
+    ListView_SetExtendedListViewStyle(
+        gui->hListView, 
+        LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_HEADERDRAGDROP
+    );
+    
+    // Aggiungi le colonne alla ListView
+    LVCOLUMN lvc;
+    ZeroMemory(&lvc, sizeof(LVCOLUMN));
+    
+    lvc.mask = LVCF_TEXT | LVCF_SUBITEM | LVCF_WIDTH | LVCF_FMT;
+    lvc.fmt = LVCFMT_LEFT;
+    
+    const char* column_names[] = {
+        "#", "Title", "Artist", "Album", "Year", "Genre", "Track"
+    };
+    
+    int column_widths[] = {
+        40, 200, 150, 150, 60, 100, 60
+    };
+    
+    for (int i = 0; i < COLUMN_COUNT; i++) {
+        lvc.iSubItem = i;
+        lvc.pszText = (char*)column_names[i];
+        lvc.cx = column_widths[i];
+        ListView_InsertColumn(gui->hListView, i, &lvc);
+    }
+    
+    // Crea la StatusBar
+    gui->hStatusBar = CreateWindowEx(
+        0,                          // Stile esteso
+        STATUSCLASSNAME,            // Nome della classe
+        "",                         // Testo
+        WS_VISIBLE | WS_CHILD,      // Stile
+        0, 0, 0, 0,                 // Posizione e dimensioni (saranno impostate in seguito)
+        hWnd,                       // Finestra genitore
+        (HMENU)STATUSBAR_ID,        // ID
+        GetModuleHandle(NULL),      // Istanza
+        NULL                        // Dati aggiuntivi
+    );
+    
+    // Crea la barra di avanzamento
+    create_progress_bar(hWnd, gui);
+    
+    // Crea il controllo del volume
+    create_volume_control(hWnd, gui);
+    
+    // Crea la ToolBar
+    create_toolbar(hWnd, gui);
+    
+    // Crea il menu principale
+    create_menu(hWnd);
+    
+    // Crea i nuovi controlli per la visualizzazione avanzata (Fase 6)
+    create_album_art_view(hWnd, gui);
+    create_detail_view(hWnd, gui);
+    create_tabs(hWnd, gui);
+    
+    // Inizializza la modalità di visualizzazione
+    gui->view_mode = VIEW_MODE_LIST;
+    
+    // Crea il player audio
+    gui->player = create_audio_player(hWnd, WM_AUDIO_NOTIFY);
+    
+    // Imposta il volume iniziale
+    set_volume(gui->player, 80);
+}
+
+// Crea la barra degli strumenti
+void create_toolbar(HWND hWnd, GUIData* gui) {
+    gui->hToolBar = CreateWindowEx(
+        0,                          // Stile esteso
+        TOOLBARCLASSNAME,           // Nome della classe
+        "",                         // Testo
+        WS_VISIBLE | WS_CHILD | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_ADJUSTABLE,
+        0, 0, 0, 0,                 // Posizione e dimensioni (saranno impostate in seguito)
+        hWnd,                       // Finestra genitore
+        (HMENU)TOOLBAR_ID,          // ID
+        GetModuleHandle(NULL),      // Istanza
+        NULL                        // Dati aggiuntivi
+    );
+    
+    // Imposta la dimensione dei pulsanti della toolbar
+    SendMessage(gui->hToolBar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+    
+    // Imposta la dimensione dei pulsanti
+    SendMessage(gui->hToolBar, TB_SETBUTTONSIZE, 0, MAKELPARAM(60, 40));
+    
+    // Definizione dei pulsanti della toolbar
+    TBBUTTON tbb[6];
+    ZeroMemory(tbb, sizeof(tbb));
+    
+    // Pulsante Play
+    tbb[0].iBitmap = I_IMAGENONE;
+    tbb[0].idCommand = ID_PLAY_START;
+    tbb[0].fsState = TBSTATE_ENABLED;
+    tbb[0].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT;
+    tbb[0].iString = (INT_PTR)"Play";
+    
+    // Pulsante Pause
+    tbb[1].iBitmap = I_IMAGENONE;
+    tbb[1].idCommand = ID_PLAY_PAUSE;
+    tbb[1].fsState = TBSTATE_ENABLED;
+    tbb[1].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT;
+    tbb[1].iString = (INT_PTR)"Pause";
+    
+    // Pulsante Stop
+    tbb[2].iBitmap = I_IMAGENONE;
+    tbb[2].idCommand = ID_PLAY_STOP;
+    tbb[2].fsState = TBSTATE_ENABLED;
+    tbb[2].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT;
+    tbb[2].iString = (INT_PTR)"Stop";
+    
+    // Separatore
+    tbb[3].fsStyle = TBSTYLE_SEP;
+    
+    // Pulsante Precedente
+    tbb[4].iBitmap = I_IMAGENONE;
+    tbb[4].idCommand = ID_PLAY_PREV;
+    tbb[4].fsState = TBSTATE_ENABLED;
+    tbb[4].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT;
+    tbb[4].iString = (INT_PTR)"Prev";
+    
+    // Pulsante Successivo
+    tbb[5].iBitmap = I_IMAGENONE;
+    tbb[5].idCommand = ID_PLAY_NEXT;
+    tbb[5].fsState = TBSTATE_ENABLED;
+    tbb[5].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_SHOWTEXT;
+    tbb[5].iString = (INT_PTR)"Next";
+    
+    // Aggiungi i pulsanti alla toolbar
+    SendMessage(gui->hToolBar, TB_ADDBUTTONS, 6, (LPARAM)&tbb);
+    
+    // Aggiorna le dimensioni della toolbar
+    SendMessage(gui->hToolBar, TB_AUTOSIZE, 0, 0);
+}
+
+// Crea il menu principale
+void create_menu(HWND hWnd) {
+    // Crea un menu
+    HMENU hMenu = CreateMenu();
+    
+    // Crea i sottomenu
+    HMENU hFileMenu = CreatePopupMenu();
+    HMENU hPlaybackMenu = CreatePopupMenu();
+    HMENU hPlaybackModeMenu = CreatePopupMenu();
+    HMENU hToolsMenu = CreatePopupMenu();
+    HMENU hViewMenu = CreatePopupMenu(); // Nuovo menu per la visualizzazione
+    HMENU hSortMenu = CreatePopupMenu(); // Sottomenu per l'ordinamento
+    HMENU hLayoutMenu = CreatePopupMenu(); // Sottomenu per il layout
+    
+    // Aggiungi voci al menu File
+    AppendMenu(hFileMenu, MF_STRING, ID_FILE_OPEN_FOLDER, "Open Folder...");
+    AppendMenu(hFileMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hFileMenu, MF_STRING, ID_FILE_EXIT, "Exit");
+    
+    // Aggiungi voci al menu Riproduzione
+    AppendMenu(hPlaybackMenu, MF_STRING, ID_PLAY_START, "Play/Pause");
+    AppendMenu(hPlaybackMenu, MF_STRING, ID_PLAY_STOP, "Stop");
+    AppendMenu(hPlaybackMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hPlaybackMenu, MF_STRING, ID_PLAY_PREV, "Previous");
+    AppendMenu(hPlaybackMenu, MF_STRING, ID_PLAY_NEXT, "Next");
+    
+    // Aggiungi voci al sottomenu Modalità di riproduzione
+    AppendMenu(hPlaybackModeMenu, MF_STRING, ID_PLAY_MODE_NORMAL, "Normal");
+    AppendMenu(hPlaybackModeMenu, MF_STRING, ID_PLAY_MODE_REPEAT_ONE, "Loop One");
+    AppendMenu(hPlaybackModeMenu, MF_STRING, ID_PLAY_MODE_REPEAT_ALL, "Loop All");
+    AppendMenu(hPlaybackModeMenu, MF_STRING, ID_PLAY_MODE_SHUFFLE, "Shuffle");
+    
+    // Aggiungi il sottomenu Modalità al menu Riproduzione
+    AppendMenu(hPlaybackMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hPlaybackMenu, MF_POPUP, (UINT_PTR)hPlaybackModeMenu, "Playback Mode");
+    
+    // Aggiungi voci al menu Strumenti
+    AppendMenu(hToolsMenu, MF_STRING, ID_PLAY_SHOW_EQ, "Equalizer");
+    
+    // Aggiungi voci al sottomenu Ordinamento
+    AppendMenu(hSortMenu, MF_STRING, ID_VIEW_SORT_TITLE, "By Title");
+    AppendMenu(hSortMenu, MF_STRING, ID_VIEW_SORT_ARTIST, "By Artist");
+    AppendMenu(hSortMenu, MF_STRING, ID_VIEW_SORT_ALBUM, "By Album");
+    AppendMenu(hSortMenu, MF_STRING, ID_VIEW_SORT_YEAR, "By Year");
+    AppendMenu(hSortMenu, MF_STRING, ID_VIEW_SORT_GENRE, "By Genre");
+    AppendMenu(hSortMenu, MF_STRING, ID_VIEW_SORT_TRACK, "By Track Number");
+    
+    // Aggiungi voci al sottomenu Layout
+    AppendMenu(hLayoutMenu, MF_STRING, ID_VIEW_LIST_MODE, "List");
+    AppendMenu(hLayoutMenu, MF_STRING, ID_VIEW_GRID_MODE, "Grid");
+    AppendMenu(hLayoutMenu, MF_STRING, ID_VIEW_ALBUM_MODE, "Album");
+    
+    // Aggiungi voci al menu Visualizzazione
+    AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hSortMenu, "Sort");
+    AppendMenu(hViewMenu, MF_POPUP, (UINT_PTR)hLayoutMenu, "Layout");
+    AppendMenu(hViewMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hViewMenu, MF_STRING, ID_VIEW_SHOW_DETAILS, "Show Details");
+    AppendMenu(hViewMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hViewMenu, MF_STRING, ID_VIEW_SHOW_ALL, "Show All Tracks");
+    
+    // Aggiungi i sottomenu al menu principale
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFileMenu, "File");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hPlaybackMenu, "Playback");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hViewMenu, "View");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hToolsMenu, "Tools");
+    
+    // Imposta il menu
+    SetMenu(hWnd, hMenu);
+}
+
+// Crea il controllo del volume
+void create_volume_control(HWND hWnd, GUIData* gui) {
+    // Crea l'etichetta "Volume: " prima dello slider
+    CreateWindowEx(
+        0,                          // Stile esteso
+        "STATIC",                   // Nome della classe
+        "Volume:",                  // Testo
+        WS_VISIBLE | WS_CHILD | SS_RIGHT,
+        0, 0, 60, 25,               // Posizione e dimensioni (saranno aggiornate in resize_controls)
+        hWnd,                       // Finestra genitore
+        (HMENU)VOLUMELABEL_ID,      // ID
+        GetModuleHandle(NULL),      // Istanza
+        NULL                        // Dati aggiuntivi
+    );
+    
+    // Crea il controllo slider per il volume
+    gui->hVolumeBar = CreateWindowEx(
+        0,                          // Stile esteso
+        TRACKBAR_CLASS,             // Nome della classe
+        "",                         // Testo
+        WS_VISIBLE | WS_CHILD | TBS_HORZ | TBS_AUTOTICKS | TBS_BOTH,
+        0, 0, 0, 0,                 // Posizione e dimensioni (saranno impostate in seguito)
+        hWnd,                       // Finestra genitore
+        (HMENU)VOLUMEBAR_ID,        // ID
+        GetModuleHandle(NULL),      // Istanza
+        NULL                        // Dati aggiuntivi
+    );
+    
+    // Imposta il range del volume (0-100)
+    SendMessage(gui->hVolumeBar, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+    
+    // Imposta il valore iniziale
+    SendMessage(gui->hVolumeBar, TBM_SETPOS, TRUE, 80);
+    
+    // Aggiungi i tick marks principali
+    SendMessage(gui->hVolumeBar, TBM_SETTICFREQ, 10, 0);
+}
+
+// Crea la barra di avanzamento
+void create_progress_bar(HWND hWnd, GUIData* gui) {
+    // Crea la barra di avanzamento
+    gui->hProgressBar = CreateWindowEx(
+        0,                          // Stile esteso
+        PROGRESS_CLASS,             // Nome della classe
+        "",                         // Testo
+        WS_VISIBLE | WS_CHILD,      // Stile
+        0, 0, 0, 0,                 // Posizione e dimensioni (saranno impostate in seguito)
+        hWnd,                       // Finestra genitore
+        (HMENU)PROGRESSBAR_ID,      // ID
+        GetModuleHandle(NULL),      // Istanza
+        NULL                        // Dati aggiuntivi
+    );
+    
+    // Imposta il range della barra di avanzamento (0-1000)
+    SendMessage(gui->hProgressBar, PBM_SETRANGE, 0, MAKELPARAM(0, 1000));
+}
+
+// Aggiorna la barra di avanzamento
+void update_progress_bar(GUIData* gui) {
+    if (!gui || !gui->player || !gui->hProgressBar) return;
+    
+    // Ottiene la posizione corrente e la durata totale
+    int position = get_current_position(gui->player);
+    int duration = get_total_duration(gui->player);
+    
+    // Aggiorna la barra di stato con la posizione corrente
+    if (duration > 0) {
+        // Conversione in formato MM:SS
+        int pos_sec = position / 1000;
+        int dur_sec = duration / 1000;
+        
+        // Otteniamo il file corrente in riproduzione
+        MP3File* current = get_current_file(gui->player);
+        
+        if (current) {
+            char status[512]; // Buffer più grande per contenere tutte le informazioni
+            
+            // Formatta una stringa che contiene tutte le informazioni richieste ma senza etichette
+            sprintf(status, "%02d:%02d / %02d:%02d | %s | %s | %s | %d", 
+                    pos_sec / 60, pos_sec % 60, 
+                    dur_sec / 60, dur_sec % 60,
+                    current->metadata.title[0] ? current->metadata.title : "Sconosciuto",
+                    current->metadata.artist[0] ? current->metadata.artist : "Sconosciuto",
+                    current->metadata.album[0] ? current->metadata.album : "Sconosciuto",
+                    current->metadata.year > 0 ? current->metadata.year : 0);
+            
+            SetWindowText(gui->hStatusBar, status);
+        } else {
+            char status[128];
+            sprintf(status, "Riproduzione: %02d:%02d / %02d:%02d", 
+                    pos_sec / 60, pos_sec % 60, 
+                    dur_sec / 60, dur_sec % 60);
+            
+            SetWindowText(gui->hStatusBar, status);
+        }
+        
+        // Aggiorna la progress bar (mappando la posizione su 0-1000)
+        int progress = (int)((position * 1000.0) / duration);
+        SendMessage(gui->hProgressBar, PBM_SETPOS, progress, 0);
+    }
+}
+
+// Ridimensiona i controlli nella finestra
+void resize_controls(HWND hWnd, GUIData* gui) {
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+    
+    // Calcola le dimensioni della StatusBar
+    int statusHeight = 20;
+    MoveWindow(gui->hStatusBar, 0, rcClient.bottom - statusHeight, 
+               rcClient.right, statusHeight, TRUE);
+    
+    // Calcola le dimensioni della ToolBar
+    RECT rcTool;
+    GetWindowRect(gui->hToolBar, &rcTool);
+    int toolHeight = rcTool.bottom - rcTool.top;
+    MoveWindow(gui->hToolBar, 0, 0, rcClient.right, toolHeight, TRUE);
+    
+    // Calcola le dimensioni della progress bar (sopra la status bar)
+    int progressHeight = 15;
+    MoveWindow(gui->hProgressBar, 0, rcClient.bottom - statusHeight - progressHeight, 
+               rcClient.right, progressHeight, TRUE);
+    
+    // Calcola le dimensioni del controllo volume (nella parte bassa, sopra la progress bar)
+    int volumeHeight = 25;
+    int volumeWidth = 200;
+    int volumeLabelWidth = 60;
+    int volumeY = rcClient.bottom - statusHeight - progressHeight - volumeHeight - 5;
+    
+    // Posiziona l'etichetta del volume
+    HWND hVolumeLabel = GetDlgItem(hWnd, VOLUMELABEL_ID);
+    if (hVolumeLabel) {
+        MoveWindow(hVolumeLabel, rcClient.right - volumeWidth - volumeLabelWidth - 15, volumeY, 
+                   volumeLabelWidth, volumeHeight, TRUE);
+    }
+    
+    // Posiziona lo slider del volume
+    MoveWindow(gui->hVolumeBar, rcClient.right - volumeWidth - 10, volumeY, 
+               volumeWidth, volumeHeight, TRUE);
+    
+    // Posiziona il controllo tab
+    int tabHeight = 25;
+    if (gui->hTabs) {
+        MoveWindow(gui->hTabs, 0, toolHeight, rcClient.right, tabHeight, TRUE);
+    }
+    
+    // Calcola lo spazio disponibile per i controlli principali
+    int mainY = toolHeight + (gui->hTabs ? tabHeight : 0);
+    int mainHeight = volumeY - mainY - 5;
+    
+    // Verifica se la vista dettagli è visibile
+    BOOL detailsVisible = IsWindowVisible(gui->hDetailView);
+    int detailWidth = 250; // Larghezza della vista dettagli
+    
+    // Posiziona la ListView
+    int listViewWidth = detailsVisible ? rcClient.right - detailWidth : rcClient.right;
+    MoveWindow(gui->hListView, 0, mainY, listViewWidth, mainHeight, TRUE);
+    
+    // Posiziona la vista dettagli e album art (se visibili)
+    if (gui->hDetailView && detailsVisible) {
+        int albumArtSize = 200;
+        
+        // Posiziona il controllo Album Art in alto a destra
+        if (gui->hAlbumArt) {
+            MoveWindow(gui->hAlbumArt, rcClient.right - detailWidth + 25, mainY + 10, 
+                       albumArtSize, albumArtSize, TRUE);
+        }
+        
+        // Posiziona la vista dettagli sotto l'album art
+        MoveWindow(gui->hDetailView, rcClient.right - detailWidth, mainY + albumArtSize + 20, 
+                   detailWidth, mainHeight - albumArtSize - 20, TRUE);
+    }
+}
+
+// Popola la ListView con i file MP3
+void populate_list_view(GUIData* gui) {
+    if (!gui) return;
+    
+    // Se siamo in modalità griglia, usa la funzione specifica
+    if (gui->view_mode == VIEW_MODE_GRID) {
+        prepare_grid_view_items(gui);
+        return;
+    }
+    
+    // Altrimenti, usa il metodo standard per la visualizzazione a lista
+    // Cancella tutti gli elementi nella ListView
+    ListView_DeleteAllItems(gui->hListView);
+    
+    // Ottieni la lista dei file MP3 da visualizzare
+    MP3File* list_to_show = gui->current_list ? gui->current_list : gui->library->all_files;
+    
+    // Aggiungi gli elementi alla ListView
+    LVITEM lvItem;
+    ZeroMemory(&lvItem, sizeof(LVITEM));
+    lvItem.mask = LVIF_TEXT | LVIF_PARAM;
+    
+    int itemIndex = 0;
+    MP3File* current = list_to_show;
+    
+    while (current) {
+        char buffer[32];
+        
+        // Colonna numero
+        lvItem.iItem = itemIndex;
+        lvItem.iSubItem = COLUMN_NUMBER;
+        sprintf(buffer, "%d", itemIndex + 1);
+        lvItem.pszText = buffer;
+        lvItem.lParam = (LPARAM)current;  // Memorizza il puntatore al file MP3
+        ListView_InsertItem(gui->hListView, &lvItem);
+        
+        // Colonna titolo
+        ListView_SetItemText(gui->hListView, itemIndex, COLUMN_TITLE, 
+                             current->metadata.title[0] ? current->metadata.title : "Sconosciuto");
+        
+        // Colonna artista
+        ListView_SetItemText(gui->hListView, itemIndex, COLUMN_ARTIST, 
+                             current->metadata.artist[0] ? current->metadata.artist : "Sconosciuto");
+        
+        // Colonna album
+        ListView_SetItemText(gui->hListView, itemIndex, COLUMN_ALBUM, 
+                             current->metadata.album[0] ? current->metadata.album : "Sconosciuto");
+        
+        // Colonna anno
+        if (current->metadata.year > 0) {
+            sprintf(buffer, "%d", current->metadata.year);
+            ListView_SetItemText(gui->hListView, itemIndex, COLUMN_YEAR, buffer);
+        } else {
+            ListView_SetItemText(gui->hListView, itemIndex, COLUMN_YEAR, "");
+        }
+        
+        // Colonna genere
+        ListView_SetItemText(gui->hListView, itemIndex, COLUMN_GENRE, 
+                             current->metadata.genre[0] ? current->metadata.genre : "");
+        
+        // Colonna traccia
+        if (current->metadata.track_number > 0) {
+            sprintf(buffer, "%d", current->metadata.track_number);
+            ListView_SetItemText(gui->hListView, itemIndex, COLUMN_TRACK, buffer);
+        } else {
+            ListView_SetItemText(gui->hListView, itemIndex, COLUMN_TRACK, "");
+        }
+        
+        itemIndex++;
+        current = current->next;
+    }
+}
+
+// Aggiorna la barra di stato
+void update_status_bar(GUIData* gui) {
+    char statusText[256];
+    int total_files = 0;
+    MP3File* current = gui->current_list ? gui->current_list : gui->library->all_files;
+    
+    while (current) {
+        total_files++;
+        current = current->next;
+    }
+    
+    sprintf(statusText, "File MP3: %d", total_files);
+    SetWindowText(gui->hStatusBar, statusText);
+}
+
+// Funzione per selezionare una cartella
+char* select_folder(HWND hWnd) {
+    static char buffer[MAX_PATH];
+    
+    BROWSEINFO bi;
+    ZeroMemory(&bi, sizeof(BROWSEINFO));
+    bi.hwndOwner = hWnd;
+    bi.pszDisplayName = buffer;
+    bi.lpszTitle = "Seleziona una cartella contenente file MP3";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    
+    LPITEMIDLIST pidl = SHBrowseForFolder(&bi);
+    if (pidl != NULL) {
+        // Ottiene il percorso dalla selezione
+        SHGetPathFromIDList(pidl, buffer);
+        
+        // Libera la memoria
+        CoTaskMemFree(pidl);
+        
+        return buffer;
+    }
+    
+    return NULL;
+}
+
+// Gestisce le azioni del menu
+void handle_menu_action(HWND hWnd, WPARAM wParam, GUIData* gui) {
+    switch (LOWORD(wParam)) {
+        case ID_FILE_OPEN_FOLDER:
+            {
+                // Mostra la finestra di dialogo per selezionare una cartella
+                char* folder = select_folder(hWnd);
+                if (folder != NULL) {
+                    // Resetta la libreria e scansiona la nuova cartella
+                    if (gui->library) {
+                        // Prima cancella tutti gli elementi dalla ListView
+                        ListView_DeleteAllItems(gui->hListView);
+                        
+                        // Rimuovi la lista filtrata se presente
+                        if (gui->using_filtered_list && gui->current_list) {
+                            gui->using_filtered_list = FALSE;
+                            gui->current_list = NULL;
+                        }
+                        
+                        // Libera la memoria della vecchia libreria
+                        free_mp3_library(gui->library);
+                        
+                        // Crea una nuova libreria con la cartella selezionata
+                        gui->library = create_library(folder);
+                        
+                        // Esegui una scansione completa della cartella (con ricorsione)
+                        int found = scan_directory(gui->library, folder, TRUE); // TRUE per abilitare la ricorsione
+                        
+                        // Ordina i file per traccia (come da default)
+                        sort_mp3_files(&gui->library->all_files, SORT_BY_TRACK);
+                        
+                        // Popola la ListView con i nuovi file
+                        populate_list_view(gui);
+                        
+                        // Aggiorna la barra di stato
+                        char statusText[256];
+                        sprintf(statusText, "Cartella: %s - %d file MP3 trovati", folder, found);
+                        SetWindowText(gui->hStatusBar, statusText);
+                        
+                        // Mostra un messaggio se non sono stati trovati file
+                        if (found == 0) {
+                            MessageBox(hWnd, "Nessun file MP3 trovato nella cartella selezionata.", 
+                                       "Informazione", MB_OK | MB_ICONINFORMATION);
+                        }
+                    }
+                }
+            }
+            break;
+            
+        case ID_FILE_EXIT:
+            DestroyWindow(hWnd);
+            break;
+            
+        case ID_PLAY_SHOW_EQ:
+            toggle_equalizer(gui);
+            break;
+            
+        case ID_PLAY_START:
+        case ID_PLAY_PAUSE:
+        case ID_PLAY_STOP:
+        case ID_PLAY_NEXT:
+        case ID_PLAY_PREV:
+            // Gestisci i controlli di riproduzione utilizzando la funzione dedicata
+            handle_playback_controls(hWnd, LOWORD(wParam), gui);
+            break;
+            
+        // Gestione dell'ordinamento
+        case ID_VIEW_SORT_TITLE:
+            gui->sort_type = SORT_BY_TITLE;
+            if (gui->using_filtered_list && gui->current_list) {
+                sort_mp3_files(gui->current_list, SORT_BY_TITLE);
+            } else {
+                sort_mp3_files(&gui->library->all_files, SORT_BY_TITLE);
+            }
+            populate_list_view(gui);
+            break;
+            
+        case ID_VIEW_SORT_ARTIST:
+            gui->sort_type = SORT_BY_ARTIST;
+            if (gui->using_filtered_list && gui->current_list) {
+                sort_mp3_files(gui->current_list, SORT_BY_ARTIST);
+            } else {
+                sort_mp3_files(&gui->library->all_files, SORT_BY_ARTIST);
+            }
+            populate_list_view(gui);
+            break;
+            
+        case ID_VIEW_SORT_ALBUM:
+            gui->sort_type = SORT_BY_ALBUM;
+            if (gui->using_filtered_list && gui->current_list) {
+                sort_mp3_files(gui->current_list, SORT_BY_ALBUM);
+            } else {
+                sort_mp3_files(&gui->library->all_files, SORT_BY_ALBUM);
+            }
+            populate_list_view(gui);
+            break;
+            
+        case ID_VIEW_SORT_YEAR:
+            gui->sort_type = SORT_BY_YEAR;
+            if (gui->using_filtered_list && gui->current_list) {
+                sort_mp3_files(gui->current_list, SORT_BY_YEAR);
+            } else {
+                sort_mp3_files(&gui->library->all_files, SORT_BY_YEAR);
+            }
+            populate_list_view(gui);
+            break;
+            
+        case ID_VIEW_SORT_GENRE:
+            gui->sort_type = SORT_BY_GENRE;
+            if (gui->using_filtered_list && gui->current_list) {
+                sort_mp3_files(gui->current_list, SORT_BY_GENRE);
+            } else {
+                sort_mp3_files(&gui->library->all_files, SORT_BY_GENRE);
+            }
+            populate_list_view(gui);
+            break;
+            
+        case ID_VIEW_SORT_TRACK:
+            gui->sort_type = SORT_BY_TRACK;
+            if (gui->using_filtered_list && gui->current_list) {
+                sort_mp3_files(gui->current_list, SORT_BY_TRACK);
+            } else {
+                sort_mp3_files(&gui->library->all_files, SORT_BY_TRACK);
+            }
+            populate_list_view(gui);
+            break;
+            
+        // Gestione delle modalità di visualizzazione
+        case ID_VIEW_LIST_MODE:
+            switch_view_mode(gui, VIEW_MODE_LIST);
+            break;
+            
+        case ID_VIEW_GRID_MODE:
+            switch_view_mode(gui, VIEW_MODE_GRID);
+            break;
+            
+        case ID_VIEW_ALBUM_MODE:
+            switch_view_mode(gui, VIEW_MODE_ALBUM);
+            break;
+            
+        case ID_VIEW_SHOW_DETAILS:
+            // Mostra/Nascondi la vista dei dettagli
+            if (IsWindowVisible(gui->hDetailView)) {
+                ShowWindow(gui->hDetailView, SW_HIDE);
+            } else {
+                ShowWindow(gui->hDetailView, SW_SHOW);
+                update_details_view(gui);
+            }
+            resize_controls(hWnd, gui);
+            break;
+            
+        case ID_VIEW_SHOW_ALL:
+            // Ripristina la visualizzazione di tutti i brani
+            if (gui->using_filtered_list && gui->current_list) {
+                // Libera la memoria della lista filtrata
+                MP3File* current = gui->current_list;
+                while (current) {
+                    MP3File* next = current->next;
+                    
+                    // Libera l'immagine dell'album se presente
+                    if (current->metadata.album_art) {
+                        free(current->metadata.album_art);
+                    }
+                    
+                    free(current);
+                    current = next;
+                }
+                
+                // Resetta lo stato
+                gui->current_list = NULL;
+                gui->using_filtered_list = FALSE;
+                
+                // Torna alla vista lista e mostra tutti i brani
+                switch_view_mode(gui, VIEW_MODE_LIST);
+                
+                // Aggiorna la barra di stato
+                update_status_bar(gui);
+            }
+            break;
+    }
+}
+
+// Gestisce le notifiche della ListView
+void handle_list_view_notification(HWND hWnd, LPARAM lParam, GUIData* gui) {
+    NMHDR* pnmh = (NMHDR*)lParam;
+    switch (pnmh->code) {
+        case LVN_ITEMCHANGED:
+            {
+                NMLISTVIEW* pnmlv = (NMLISTVIEW*)lParam;
+                if (pnmlv->uChanged & LVIF_STATE) {
+                    if (pnmlv->uNewState & LVIS_SELECTED) {
+                        gui->selected_item = pnmlv->iItem;
+                        // Sempre mostra e aggiorna la vista dei dettagli
+                        if (gui->hDetailView) {
+                            if (!IsWindowVisible(gui->hDetailView)) {
+                                ShowWindow(gui->hDetailView, SW_SHOW);
+                                resize_controls(hWnd, gui);
+                            }
+                            update_details_view(gui);
+                        }
+                    }
+                }
+            }
+            break;
+    }
+}

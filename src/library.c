@@ -1,4 +1,5 @@
 #include "../include/mp3player.h"
+#include "../include/memory.h"
 
 // Funzione per creare una nuova libreria MP3
 MP3Library* create_library(const char* directory_path) {
@@ -6,7 +7,7 @@ MP3Library* create_library(const char* directory_path) {
         return NULL;
     }
     
-    MP3Library* library = (MP3Library*)malloc(sizeof(MP3Library));
+    MP3Library* library = (MP3Library*)MEM_ALLOC(sizeof(MP3Library));
     if (!library) {
         return NULL;
     }
@@ -62,7 +63,7 @@ int scan_directory(MP3Library* library, const char* directory_path, BOOL recursi
             char* ext = strrchr(findFileData.cFileName, '.');
             if (ext && _stricmp(ext, ".mp3") == 0) {
                 // Crea un nuovo nodo per il file MP3
-                MP3File* new_file = (MP3File*)malloc(sizeof(MP3File));
+                MP3File* new_file = (MP3File*)MEM_ALLOC(sizeof(MP3File));
                 if (new_file) {
                     strncpy(new_file->filepath, full_path, MAX_PATH_LENGTH - 1);
                     new_file->filepath[MAX_PATH_LENGTH - 1] = '\0';
@@ -99,10 +100,10 @@ void free_mp3_file(MP3File* file) {
     
     // Libera l'immagine dell'album se presente
     if (file->metadata.album_art) {
-        free(file->metadata.album_art);
+        MEM_FREE(file->metadata.album_art);
     }
     
-    free(file);
+    MEM_FREE(file);
 }
 
 // Funzione per liberare la memoria di una coda di riproduzione
@@ -112,7 +113,7 @@ void free_mp3_queue(MP3Queue* queue) {
     }
     
     // Non liberiamo i singoli MP3File qui perché sono referenziati dalla libreria
-    free(queue);
+    MEM_FREE(queue);
 }
 
 // Funzione per liberare la memoria di una libreria MP3
@@ -129,5 +130,5 @@ void free_mp3_library(MP3Library* library) {
         current = next;
     }
     
-    free(library);
+    MEM_FREE(library);
 } 

@@ -109,6 +109,12 @@ void create_controls(HWND hWnd, GUIData* gui) {
         NULL                        // Dati aggiuntivi
     );
     
+    // Imposta un font migliore per la ListView
+    HFONT hFont = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
+    SendMessage(gui->hListView, WM_SETFONT, (WPARAM)hFont, TRUE);
+    
     // Aggiungi lo stile esteso alla ListView
     ListView_SetExtendedListViewStyle(
         gui->hListView, 
@@ -472,6 +478,9 @@ void resize_controls(HWND hWnd, GUIData* gui) {
     int listViewWidth = detailsVisible ? rcClient.right - detailWidth : rcClient.right;
     MoveWindow(gui->hListView, 0, mainY, listViewWidth, mainHeight, TRUE);
     
+    // Ridimensiona le colonne in proporzione alla dimensione della finestra
+    adjust_column_widths(gui->hListView, listViewWidth);
+    
     // Posiziona la vista dettagli e album art (se visibili)
     if (gui->hDetailView && detailsVisible) {
         int albumArtSize = 200;
@@ -488,8 +497,52 @@ void resize_controls(HWND hWnd, GUIData* gui) {
     }
 }
 
+// Funzione per regolare dinamicamente la larghezza delle colonne
+void adjust_column_widths(HWND hListView, int totalWidth) {
+    if (!hListView) return;
+    
+    int columnCount = Header_GetItemCount(ListView_GetHeader(hListView));
+    if (columnCount <= 0) return;
+    
+    // Proporzioni consigliate per le colonne (in percentuali)
+    float columnWidthPercentages[] = {
+        5.0f,   // #
+        30.0f,  // Title
+        20.0f,  // Artist
+        20.0f,  // Album
+        7.5f,   // Year
+        10.0f,  // Genre
+        7.5f    // Track
+    };
+    
+    // Assicurati che ci siano abbastanza percentuali per tutte le colonne
+    int percentageCount = sizeof(columnWidthPercentages) / sizeof(float);
+    if (percentageCount < columnCount) {
+        return;
+    }
+    
+    // Calcola le larghezze effettive in base alle percentuali
+    for (int i = 0; i < columnCount; i++) {
+        int width = (int)(totalWidth * columnWidthPercentages[i] / 100.0f);
+        
+        // Imposta una larghezza minima per la colonna
+        if (width < 30) width = 30;
+        
+        ListView_SetColumnWidth(hListView, i, width);
+    }
+}
+
 // Popola la ListView con i file MP3
 void populate_list_view(GUIData* gui) {
+    if (!gui) return;
+    
+    // Se siamo in modalità griglia, usa la funzione specifica
+    if (gui->view_mode == VIEW_MODE_GRID) {
+        prepare_grid_view_items(gui);
+        return;
+    }
+    
+    // Altrimenti, usa il metodo standard per la visualizzazione a lista
     // Cancella tutti gli elementi nella ListView
     ListView_DeleteAllItems(gui->hListView);
     
@@ -537,7 +590,7 @@ void populate_list_view(GUIData* gui) {
         
         // Colonna genere
         ListView_SetItemText(gui->hListView, itemIndex, COLUMN_GENRE, 
-                             current->metadata.genre[0] ? current->metadata.genre : "Sconosciuto");
+                             current->metadata.genre[0] ? current->metadata.genre : "");
         
         // Colonna traccia
         if (current->metadata.track_number > 0) {
@@ -547,12 +600,9 @@ void populate_list_view(GUIData* gui) {
             ListView_SetItemText(gui->hListView, itemIndex, COLUMN_TRACK, "");
         }
         
-        current = current->next;
         itemIndex++;
+        current = current->next;
     }
-    
-    // Aggiorna la barra di stato
-    update_status_bar(gui);
 }
 
 // Aggiorna la barra di stato
@@ -758,8 +808,9 @@ void handle_list_view_notification(HWND hWnd, LPARAM lParam, GUIData* gui) {
                 if (pnmlv->uChanged & LVIF_STATE) {
                     if (pnmlv->uNewState & LVIS_SELECTED) {
                         gui->selected_item = pnmlv->iItem;
-                        // Aggiorna la vista dei dettagli se è visibile
-                        if (gui->hDetailView && IsWindowVisible(gui->hDetailView)) {
+                        // Mostra e aggiorna la vista dei dettagli
+                        if (gui->hDetailView) {
+                            ShowWindow(gui->hDetailView, SW_SHOW);
                             update_details_view(gui);
                         }
                     }
@@ -769,16 +820,23 @@ void handle_list_view_notification(HWND hWnd, LPARAM lParam, GUIData* gui) {
             
         case NM_DBLCLK:
             {
-                NMITEMACTIVATE* pia = (NMITEMACTIVATE*)lParam;
-                if (pia->iItem != -1) {
-                    gui->selected_item = pia->iItem;
-                    // Avvia la riproduzione del file selezionato
-                    play_selected_file(gui);
+                NMITEMACTIVATE* pnmia = (NMITEMACTIVATE*)lParam;
+                
+                // Se siamo in vista griglia, gestisci il doppio click su un album
+                if (gui->view_mode == VIEW_MODE_GRID && pnmia->iItem != -1) {
+                    // Ottieni il file rappresentativo dell'album
+                    LVITEM lvItem;
+                    ZeroMemory(&lvItem, sizeof(LVITEM));
+                    lvItem.mask = LVIF_PARAM;
+                    lvItem.iItem = pnmia->iItem;
                     
-                    // Aggiorna la vista dei dettagli se è visibile
-                    if (gui->hDetailView && IsWindowVisible(gui->hDetailView)) {
-                        update_details_view(gui);
+                    if (ListView_GetItem(gui->hListView, &lvItem)) {
+                        MP3File* representative_file = (MP3File*)lvItem.lParam;
+                        handle_album_selection(gui, representative_file);
                     }
+                } else {
+                    // Doppio click nella vista lista, avvia la riproduzione
+                    play_selected_file(gui);
                 }
             }
             break;
@@ -1082,18 +1140,20 @@ void draw_list_view_item(HWND hWnd, LPDRAWITEMSTRUCT lpDrawItem) {
     BOOL isPlaying = (itemIndex == currently_highlighted_item);
     
     // Crea un font normale e uno in grassetto
-    HFONT hFontNormal = CreateFont(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, 0, 
+    HFONT hFontNormal = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, 0, 
                                  ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+                                 DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
     
-    HFONT hFontBold = CreateFont(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, 0, 
+    HFONT hFontBold = CreateFont(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, 0, 
                                ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                               DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+                               DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
     
     // Colore sfondo - sempre bianco di base, blu solo se selezionato
     COLORREF bgColor;
     if (isSelected) {
         bgColor = RGB(51, 153, 255); // Blu chiaro per selezione
+    } else if (itemIndex % 2 == 0) {
+        bgColor = RGB(245, 245, 250); // Righe alternate leggermente colorate
     } else {
         bgColor = RGB(255, 255, 255); // Bianco normale
     }
@@ -1275,15 +1335,15 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }
 
-// Funzione di entry point per avviare l'interfaccia grafica
+// Funzione principale per avviare l'interfaccia grafica
 int start_gui(HINSTANCE hInstance, MP3Library* library) {
-    // Inizializza i controlli comuni
+    // Inizializza i controlli comuni di Windows
     if (!init_gui_controls()) {
-        MessageBox(NULL, "Inizializzazione dei controlli comuni fallita", "Errore", MB_ICONERROR);
+        MessageBox(NULL, "Impossibile inizializzare i controlli comuni", "Errore", MB_ICONERROR);
         return 1;
     }
     
-    // Inizializza GDI+ per la decodifica delle immagini
+    // Inizializza GDI+
     ULONG_PTR gdiplusToken;
     GdiplusStartupInput gdiplusStartupInput;
     gdiplusStartupInput.GdiplusVersion = 1;
@@ -1292,29 +1352,31 @@ int start_gui(HINSTANCE hInstance, MP3Library* library) {
     gdiplusStartupInput.SuppressExternalCodecs = FALSE;
     
     if (GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL) != Ok) {
-        MessageBox(NULL, "Inizializzazione di GDI+ fallita", "Errore", MB_ICONERROR);
+        MessageBox(NULL, "Impossibile inizializzare GDI+", "Errore", MB_ICONERROR);
         return 1;
     }
-    
-    // Memorizza il puntatore alla libreria
-    g_gui_data.library = library;
-    
-    // Ordina i file per numero di traccia (default)
-    sort_mp3_files(&library->all_files, SORT_BY_TRACK);
     
     // Crea la finestra principale
     HWND hWnd = create_main_window(hInstance);
     if (!hWnd) {
-        GdiplusShutdown(gdiplusToken);
         return 1;
     }
     
+    // Salva il puntatore alla libreria
+    g_gui_data.library = library;
+    
+    // Imposta le dimensioni iniziali dei controlli
+    resize_controls(hWnd, &g_gui_data);
+    
     // Mostra la finestra
-    ShowWindow(hWnd, SW_SHOWDEFAULT);
+    ShowWindow(hWnd, SW_SHOW);
     UpdateWindow(hWnd);
     
-    // Popola la ListView con i file MP3
+    // Popola la lista con i file MP3 dalla libreria
     populate_list_view(&g_gui_data);
+    
+    // Imposta il testo della StatusBar iniziale
+    SetWindowText(g_gui_data.hStatusBar, "Pronto");
     
     // Loop dei messaggi
     MSG msg;
@@ -1323,7 +1385,7 @@ int start_gui(HINSTANCE hInstance, MP3Library* library) {
         DispatchMessage(&msg);
     }
     
-    // Chiudi GDI+
+    // Termina GDI+
     GdiplusShutdown(gdiplusToken);
     
     return (int)msg.wParam;
@@ -1697,8 +1759,14 @@ void create_detail_view(HWND hWnd, GUIData* gui) {
         NULL
     );
     
-    // Nascondi il controllo all'inizio
-    ShowWindow(gui->hDetailView, SW_HIDE);
+    // Imposta il font Arial
+    HFONT hFont = CreateFont(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
+    SendMessage(gui->hDetailView, WM_SETFONT, (WPARAM)hFont, TRUE);
+    
+    // Mostra il controllo all'inizio
+    ShowWindow(gui->hDetailView, SW_SHOW);
 }
 
 // Aggiorna la vista dei dettagli
@@ -1725,8 +1793,7 @@ void update_details_view(GUIData* gui) {
                 "Genere: %s\n"
                 "Traccia: %d\n"
                 "Durata: %d:%02d\n"
-                "Formato immagine: %s\n"
-                "File: %s",
+                "Formato Copertina: %s",
                 file->metadata.title[0] ? file->metadata.title : "Sconosciuto",
                 file->metadata.artist[0] ? file->metadata.artist : "Sconosciuto",
                 file->metadata.album[0] ? file->metadata.album : "Sconosciuto",
@@ -1795,12 +1862,38 @@ void switch_view_mode(GUIData* gui, int view_mode) {
     switch (view_mode) {
         case VIEW_MODE_LIST:
             // Visualizzazione a lista (default)
-            ListView_SetView(gui->hListView, LV_VIEW_DETAILS);
+            SetWindowLong(gui->hListView, GWL_STYLE, 
+                GetWindowLong(gui->hListView, GWL_STYLE) & ~LVS_TYPEMASK | LVS_REPORT);
+            
+            // Riattiva l'owner draw
+            SetWindowLong(gui->hListView, GWL_STYLE, 
+                GetWindowLong(gui->hListView, GWL_STYLE) | LVS_OWNERDRAWFIXED);
+                
+            // Mostra le intestazioni delle colonne
+            ListView_SetExtendedListViewStyle(gui->hListView, 
+                ListView_GetExtendedListViewStyle(gui->hListView) | 
+                LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_HEADERDRAGDROP);
+            
             break;
             
         case VIEW_MODE_GRID:
-            // Visualizzazione a griglia/icone
-            ListView_SetView(gui->hListView, LV_VIEW_ICON);
+            {
+                // Visualizzazione a griglia con copertine
+                // Cambia lo stile della lista a icon view e disabilita owner draw
+                SetWindowLong(gui->hListView, GWL_STYLE, 
+                    (GetWindowLong(gui->hListView, GWL_STYLE) & ~LVS_TYPEMASK & ~LVS_OWNERDRAWFIXED) | LVS_ICON);
+                
+                // Rimuovi stili estesi non necessari per la vista icone
+                ListView_SetExtendedListViewStyle(gui->hListView, 
+                    ListView_GetExtendedListViewStyle(gui->hListView) & 
+                    ~(LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_HEADERDRAGDROP));
+                
+                // Imposta la spaziatura tra le icone per la visualizzazione a griglia
+                ListView_SetIconSpacing(gui->hListView, 220, 240);  // Larghezza, Altezza
+                
+                // Prepara le icone di album per tutti gli elementi
+                prepare_grid_view_items(gui);
+            }
             break;
             
         case VIEW_MODE_ALBUM:
@@ -1808,13 +1901,201 @@ void switch_view_mode(GUIData* gui, int view_mode) {
             MessageBox(gui->hWnd, "Visualizzazione per album non ancora implementata completamente", 
                      "Avviso", MB_OK | MB_ICONINFORMATION);
             // Usa la vista a icone come base
-            ListView_SetView(gui->hListView, LV_VIEW_ICON);
+            SetWindowLong(gui->hListView, GWL_STYLE, 
+                (GetWindowLong(gui->hListView, GWL_STYLE) & ~LVS_TYPEMASK) | LVS_ICON);
             break;
     }
     
     // Ridisegna la finestra
-    InvalidateRect(gui->hWnd, NULL, TRUE);
+    InvalidateRect(gui->hListView, NULL, TRUE);
+    UpdateWindow(gui->hListView);
     
     // Ridimensiona i controlli
     resize_controls(gui->hWnd, gui);
-} 
+}
+
+// Struttura per tenere traccia degli album unici
+typedef struct AlbumInfo {
+    char album[MAX_ALBUM_LENGTH];
+    char artist[MAX_ARTIST_LENGTH];
+    int year;
+    MP3File* representative_file; // Un file rappresentativo per questo album
+    int track_count;              // Numero di tracce nell'album
+    struct AlbumInfo* next;
+} AlbumInfo;
+
+// Prepara gli elementi per la visualizzazione a griglia
+void prepare_grid_view_items(GUIData* gui) {
+    if (!gui || !gui->hListView) return;
+    
+    // Cancella tutti gli elementi nella ListView
+    ListView_DeleteAllItems(gui->hListView);
+    
+    // Lista di bitmap per gli elementi
+    static HIMAGELIST g_hLargeImageList = NULL;
+    
+    // Distruggi la vecchia image list se esiste
+    if (g_hLargeImageList) {
+        ImageList_Destroy(g_hLargeImageList);
+        g_hLargeImageList = NULL;
+    }
+    
+    // Crea una nuova image list per le copertine degli album
+    g_hLargeImageList = ImageList_Create(200, 200, ILC_COLOR32, 100, 10);
+    if (!g_hLargeImageList) return;
+    
+    // Imposta l'image list per la vista a icone
+    ListView_SetImageList(gui->hListView, g_hLargeImageList, LVSIL_NORMAL);
+    
+    // Ottieni la lista dei file MP3 da visualizzare
+    MP3File* list_to_show = gui->current_list ? gui->current_list : gui->library->all_files;
+    
+    // Crea una lista di album unici
+    AlbumInfo* album_list = NULL;
+    MP3File* current_file = list_to_show;
+    
+    while (current_file) {
+        // Controlla se l'album è già nella lista
+        BOOL album_found = FALSE;
+        AlbumInfo* current_album = album_list;
+        
+        while (current_album) {
+            // Confronta per nome album (case-insensitive)
+            if (stricmp(current_album->album, current_file->metadata.album) == 0) {
+                // Album trovato, incrementa il conteggio delle tracce
+                current_album->track_count++;
+                album_found = TRUE;
+                break;
+            }
+            current_album = current_album->next;
+        }
+        
+        // Se l'album non è nella lista, aggiungilo
+        if (!album_found) {
+            AlbumInfo* new_album = (AlbumInfo*)malloc(sizeof(AlbumInfo));
+            if (new_album) {
+                strncpy(new_album->album, current_file->metadata.album[0] ? 
+                         current_file->metadata.album : "Unknown Album", MAX_ALBUM_LENGTH - 1);
+                new_album->album[MAX_ALBUM_LENGTH - 1] = '\0';
+                
+                strncpy(new_album->artist, current_file->metadata.artist[0] ? 
+                         current_file->metadata.artist : "Unknown Artist", MAX_ARTIST_LENGTH - 1);
+                new_album->artist[MAX_ARTIST_LENGTH - 1] = '\0';
+                
+                new_album->year = current_file->metadata.year;
+                new_album->representative_file = current_file;
+                new_album->track_count = 1;
+                
+                // Aggiunge il nuovo album all'inizio della lista
+                new_album->next = album_list;
+                album_list = new_album;
+            }
+        }
+        
+        current_file = current_file->next;
+    }
+    
+    // Ora aggiungi un elemento alla ListView per ogni album unico
+    AlbumInfo* current_album = album_list;
+    int index = 0;
+    
+    while (current_album) {
+        // Crea il bitmap dell'album art
+        HBITMAP hBitmap = create_album_art_bitmap(current_album->representative_file);
+        
+        if (hBitmap) {
+            // Aggiungi il bitmap all'image list
+            int imageIndex = ImageList_Add(g_hLargeImageList, hBitmap, NULL);
+            
+            // Crea un nuovo elemento nella ListView
+            LVITEM lvItem;
+            ZeroMemory(&lvItem, sizeof(LVITEM));
+            
+            lvItem.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
+            lvItem.iItem = index;
+            lvItem.iImage = imageIndex;
+            
+            // Formatta il testo con album, artista, anno e numero di tracce
+            char text[512];
+            sprintf(text, "%s\n%s\n%d\n%d tracce", 
+                    current_album->album, 
+                    current_album->artist,
+                    current_album->year > 0 ? current_album->year : 0,
+                    current_album->track_count);
+            
+            lvItem.pszText = text;
+            lvItem.lParam = (LPARAM)current_album->representative_file;  // Salva il puntatore al file rappresentativo
+            
+            // Inserisci l'elemento
+            ListView_InsertItem(gui->hListView, &lvItem);
+            
+            // Libera il bitmap originale (l'image list ne ha fatto una copia)
+            DeleteObject(hBitmap);
+        }
+        
+        // Vai al prossimo album
+        AlbumInfo* temp = current_album;
+        current_album = current_album->next;
+        free(temp);  // Libera la memoria dell'AlbumInfo corrente
+        
+        index++;
+    }
+}
+
+// Quando un album è stato selezionato nella vista a griglia, seleziona tutte le tracce corrispondenti
+void handle_album_selection(GUIData* gui, MP3File* representative_file) {
+    if (!gui || !representative_file) return;
+    
+    // Ottieni il nome dell'album selezionato
+    const char* selected_album = representative_file->metadata.album;
+    
+    // Crea un filtro per l'album selezionato
+    MP3Filter filter;
+    filter.filter_type = FILTER_BY_ALBUM;
+    strncpy(filter.filter_text, selected_album, MAX_FILTER_LENGTH - 1);
+    filter.filter_text[MAX_FILTER_LENGTH - 1] = '\0';
+    
+    // Libera la lista filtrata precedente se esiste
+    if (gui->using_filtered_list && gui->current_list) {
+        MP3File* current = gui->current_list;
+        while (current) {
+            MP3File* next = current->next;
+            free(current);
+            current = next;
+        }
+        gui->current_list = NULL;
+    }
+    
+    // Crea una nuova lista filtrata con le tracce dell'album
+    gui->current_list = filter_mp3_files(gui->library, &filter);
+    gui->using_filtered_list = TRUE;
+    
+    // Ora ordina la lista filtrata per numero di traccia
+    if (gui->current_list) {
+        sort_mp3_files(&gui->current_list, SORT_BY_TRACK);
+    }
+    
+    // Passa alla vista lista e mostra solo le tracce dell'album
+    switch_view_mode(gui, VIEW_MODE_LIST);
+    
+    // Aggiorna la visualizzazione
+    populate_list_view(gui);
+    
+    // Seleziona il primo elemento se disponibile
+    if (ListView_GetItemCount(gui->hListView) > 0) {
+        ListView_SetItemState(gui->hListView, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        gui->selected_item = 0;
+        
+        // Aggiorna anche la vista dettagli e la copertina dell'album
+        update_details_view(gui);
+        update_album_art(gui, representative_file);
+    }
+    
+    // Aggiorna la barra di stato con informazioni sull'album
+    char statusText[256];
+    sprintf(statusText, "Album: %s - Artista: %s - %d tracce", 
+            selected_album, 
+            representative_file->metadata.artist[0] ? representative_file->metadata.artist : "Unknown",
+            ListView_GetItemCount(gui->hListView));
+    SetWindowText(gui->hStatusBar, statusText);
+}

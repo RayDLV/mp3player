@@ -1,4 +1,5 @@
 #include "../include/mp3player.h"
+#include "../include/memory.h"
 #include <locale.h>
 #include <windows.h>
 
@@ -6,6 +7,9 @@
 int start_gui_from_cli(MP3Library* library);
 
 int main(int argc, char* argv[]) {
+    // Initialize memory tracking system
+    mem_init();
+    
     // Imposta la codepage per la visualizzazione dei caratteri accentati
     SetConsoleOutputCP(65001); // UTF-8 code page
     SetConsoleCP(65001);       // Input code page
@@ -31,6 +35,7 @@ int main(int argc, char* argv[]) {
     MP3Library* library = create_library(library_path);
     if (!library) {
         printf("Error: unable to create MP3 library.\n");
+        mem_shutdown();
         return 1;
     }
     
@@ -39,6 +44,9 @@ int main(int argc, char* argv[]) {
     // Scansione iniziale della directory
     int found_files = scan_directory(library, library_path, TRUE);
     printf("Found %d MP3 files.\n", found_files);
+    
+    // Print memory usage after initial scan
+    mem_report();
     
     // Qui andrà il codice per l'interfaccia utente e il loop principale
     // Per ora, mostriamo un semplice menu testuale
@@ -52,6 +60,7 @@ int main(int argc, char* argv[]) {
     printf("  filter [type] [text] - Filter MP3 files (title, artist, album, genre, year)\n");
     printf("  reset - Reset display to complete list\n");
     printf("  gui - Start graphical interface\n");
+    printf("  memstat - Show memory statistics\n");
     printf("  quit - Exit program\n");
     
     char input[MAX_PATH_LENGTH];
@@ -104,7 +113,7 @@ int main(int argc, char* argv[]) {
                 MP3File* current = filtered_list;
                 while (current) {
                     MP3File* next = current->next;
-                    free(current);
+                    MEM_FREE(current);
                     current = next;
                 }
                 filtered_list = NULL;
@@ -345,7 +354,7 @@ int main(int argc, char* argv[]) {
                 MP3File* current = filtered_list;
                 while (current) {
                     MP3File* next = current->next;
-                    free(current);
+                    MEM_FREE(current);
                     current = next;
                 }
                 filtered_list = NULL;
@@ -371,7 +380,7 @@ int main(int argc, char* argv[]) {
                 MP3File* current = filtered_list;
                 while (current) {
                     MP3File* next = current->next;
-                    free(current);
+                    MEM_FREE(current);
                     current = next;
                 }
                 filtered_list = NULL;
@@ -401,11 +410,15 @@ int main(int argc, char* argv[]) {
                 MP3File* current = filtered_list;
                 while (current) {
                     MP3File* next = current->next;
-                    free(current);
+                    MEM_FREE(current);
                     current = next;
                 }
                 filtered_list = NULL;
             }
+        }
+        else if (strcmp(command, "memstat") == 0) {
+            // Display memory statistics
+            mem_report();
         }
         else if (strcmp(command, "quit") == 0) {
             // Ferma la scansione continua se attiva
@@ -419,7 +432,7 @@ int main(int argc, char* argv[]) {
                 MP3File* current = filtered_list;
                 while (current) {
                     MP3File* next = current->next;
-                    free(current);
+                    MEM_FREE(current);
                     current = next;
                 }
             }
@@ -433,6 +446,14 @@ int main(int argc, char* argv[]) {
     
     // Pulizia della memoria
     free_mp3_library(library);
+    
+    // Final memory report to check for leaks
+    printf("Final memory report before shutdown:\n");
+    mem_report();
+    
+    // Shutdown memory tracking system
+    mem_shutdown();
+    
     printf("Program terminated.\n");
     
     return 0;

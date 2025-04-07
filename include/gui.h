@@ -5,6 +5,7 @@
 #include <commctrl.h>
 #include "mp3player.h"
 #include "audio.h"
+#include "settings.h"
 
 // Alias per compatibilità
 typedef MP3File* MP3FileList;
@@ -97,6 +98,7 @@ typedef struct {
     
     MP3Library* library;     // Riferimento alla libreria MP3
     AudioPlayer* player;     // Riferimento al player audio
+    UserSettings* settings;  // User settings
     
     int selected_item;       // Indice dell'elemento selezionato
     SortType sort_type;      // Tipo di ordinamento corrente
@@ -145,9 +147,46 @@ void free_album_art_bitmap(GUIData* gui);             // Libera il bitmap dell'a
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 // Funzione di entry point per avviare l'interfaccia grafica
-int start_gui(HINSTANCE hInstance, MP3Library* library);
+int start_gui(HINSTANCE hInstance, MP3Library* library, UserSettings* settings);
 
 // Funzione per attivare/disattivare l'equalizzatore
 void toggle_equalizer(GUIData* gui);
+
+// Prototipi delle funzioni
+BOOL init_gui_controls();
+HWND create_main_window(HINSTANCE hInstance);
+void create_controls(HWND hWnd, GUIData* gui);
+void create_toolbar(HWND hWnd, GUIData* gui);
+void create_menu(HWND hWnd);
+void create_volume_control(HWND hWnd, GUIData* gui);
+void create_progress_bar(HWND hWnd, GUIData* gui);
+void update_progress_bar(GUIData* gui);
+void resize_controls(HWND hWnd, GUIData* gui);
+void populate_list_view(GUIData* gui);
+void update_status_bar(GUIData* gui);
+char* select_folder(HWND hWnd);
+void handle_menu_action(HWND hWnd, WPARAM wParam, GUIData* gui);
+void handle_list_view_notification(HWND hWnd, LPARAM lParam, GUIData* gui);
+void play_selected_file(GUIData* gui);
+void update_playback_ui(GUIData* gui);
+void handle_playback_notification(HWND hWnd, WPARAM wParam, LPARAM lParam, GUIData* gui);
+void handle_playback_controls(HWND hWnd, int control_id, GUIData* gui);
+void draw_list_view_item(HWND hWnd, LPDRAWITEMSTRUCT lpDrawItem);
+LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+int start_gui(HINSTANCE hInstance, MP3Library* library, UserSettings* settings);
+void create_equalizer_dialog(HWND hParent, GUIData* gui);
+LRESULT CALLBACK EqDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+void toggle_equalizer(GUIData* gui);
+void create_album_art_view(HWND hWnd, GUIData* gui);
+HBITMAP create_album_art_bitmap(MP3File* file);
+void update_album_art(GUIData* gui, MP3File* file);
+void free_album_art_bitmap(GUIData* gui);
+void create_detail_view(HWND hWnd, GUIData* gui);
+void update_details_view(GUIData* gui);
+void create_tabs(HWND hWnd, GUIData* gui);
+void switch_view_mode(GUIData* gui, int view_mode);
+void prepare_grid_view_items(GUIData* gui);
+void handle_album_selection(GUIData* gui, MP3File* representative_file);
+void adjust_column_widths(HWND hListView, int totalWidth);
 
 #endif // GUI_H 

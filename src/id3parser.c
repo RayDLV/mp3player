@@ -1,4 +1,5 @@
 #include "../include/mp3player.h"
+#include "../include/bass.h"
 
 // Dimensione dell'header ID3v2
 #define ID3V2_HEADER_SIZE 10
@@ -349,6 +350,15 @@ int read_mp3_metadata(const char* filepath, MP3Metadata* metadata) {
     
     // Chiudi il file
     fclose(file);
+    
+    // Ottieni la durata del file usando BASS
+    HSTREAM stream = BASS_StreamCreateFile(FALSE, filepath, 0, 0, BASS_STREAM_DECODE | BASS_STREAM_PRESCAN);
+    if (stream) {
+        QWORD length = BASS_ChannelGetLength(stream, BASS_POS_BYTE);
+        double seconds = BASS_ChannelBytes2Seconds(stream, length);
+        metadata->duration = (int)seconds;
+        BASS_StreamFree(stream);
+    }
     
     return success;
 }
